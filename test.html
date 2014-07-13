@@ -41,8 +41,8 @@
 
     function axialToPixels(qr) {
       return {
-        x: width * (qr.q + qr.r / 2),
-        y: width * qr.r * sin };
+        x: width * (qr.q + qr.r / 2) + canvas.width/2,
+        y: width * qr.r * sin + canvas.height/2 };
     }
 
     function pixelsToAxial(xy) {
@@ -68,10 +68,7 @@
       ctx.fillStyle = color;
       ctx.lineWidth = 1;
 
-      var xy = axialToPixels(qr);
-      var c = {
-        x: xy.x + canvas.width/2,
-        y: xy.y + canvas.height/2 };
+      var c = axialToPixels(qr);
 
       ctx.beginPath();
 
@@ -100,7 +97,6 @@
            y = xy.y + canvas.height/2,
            a1 = wedge * (e - 0.5),
            a2 = wedge * (e + 0.5);
-      console.log('drawEdge:', qr.q, qr.r, e, a1, a2); // XXX
       if (!color) color = 'blue';
       ctx.strokeStyle = color;
       ctx.lineWidth = 5;
@@ -122,10 +118,6 @@
       [[+0, -1, 2], null, [-1, +1, 4]],
       [[-1, +0, 3], null, [+1, +0, 0]],
       [[+1, -1, 1], null, [+0, +1, 5]]
-    ];
-
-    var dangers = [
-      [5, null, 1], [0, null, 2], [3, null, 1], [4, null, 2], [3, null, 5], [0, null, 4]
     ];
 
     var edge_offsets = [
@@ -168,13 +160,14 @@
         // if the nearest neighbor to the edge crossed
         // by this transition is filled, then fail
         var sum = le + e + tx + tx + tx + tx;
-        var danger_edge = dangers[d[2]][sign(sum)+1];
+        var danger_edge = (d[2] + 6 - sign(sum) * xs * ys) % 6;
         var danger = { q: n.q + edge_offsets[danger_edge][0], r: n.r + edge_offsets[danger_edge][1] };
         console.log('n.q:', n.q, 'n.r:', n.r, 'e:', d[2], 'sum:', sum, 'de:', danger_edge, 'd.q:', danger.q, 'd.r:', danger.r) // XXX
         danger = getCell(danger);
         if (sum != 0 && tx != 0 && danger && danger.filled) return false;
         le = e;
-        c.clean = (sum == 0);
+        c.maybe_clean = (sum == 0);
+        console.log('CLEAN (los):', n.q, n.r, c.clean); // XXX
         c.maybe_edge = d[2];
         n = { q: n.q + d[0], r: n.r + d[1] };
       }
@@ -213,21 +206,38 @@
             e = e + ty3;
           }
         }
-        console.log(le+tx+tx, e+tx+tx);
+
+        // get the danger cell
+        var sum = le + e + tx + tx + tx + tx;
+        var danger_edge = (d[2] + 6 - sign(sum) * xs * ys) % 6;
+        var danger = { q: n.q + edge_offsets[danger_edge][0], r: n.r + edge_offsets[danger_edge][1] };
+
+        // console.log(le+tx+tx, e+tx+tx);
+
+        // draw a line from the edge midpoint to the danger cell
+        if (sum != 0) {
+          var m = midpoint(n, d[2]),
+              xy1 = axialToPixels(m),
+              xy2 = axialToPixels(danger);
+          ctx.strokeStyle = 'green';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(xy1.x, xy1.y);
+          ctx.lineTo(xy2.x, xy2.y);
+          ctx.closePath();
+          ctx.stroke();
+        }
+
         le = e;
         n = { q: n.q + d[0], r: n.r + d[1] };
       }
       var xy1 = axialToPixels(a),
-          xy2 = axialToPixels(b),
-           x1 = xy1.x + canvas.width/2,
-           y1 = xy1.y + canvas.height/2,
-           x2 = xy2.x + canvas.width/2,
-           y2 = xy2.y + canvas.height/2;
+          xy2 = axialToPixels(b);
       ctx.lineWidth = 3;
       ctx.strokeStyle = 'red';
       ctx.beginPath()
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
+      ctx.moveTo(xy1.x, xy1.y);
+      ctx.lineTo(xy2.x, xy2.y);
       ctx.closePath();
       ctx.stroke();
     }
@@ -245,9 +255,11 @@
       if (los) {
         c.los = true;
         c.edge = c.maybe_edge;
+        c.clean = c.maybe_clean;
         return;
       } else {
         c.los = false;
+        console.log('CLEAN (set):', c.qr.q, c.qr.r, true); // XXX
         c.clean = true;
       }
       var min = Infinity, t = null, ii = null;
@@ -285,12 +297,10 @@
     }
 
     function drawCircle(qr) {
-      var xy = axialToPixels(qr),
-           x = xy.x + canvas.width/2,
-           y = xy.y + canvas.height/2;
+      var xy = axialToPixels(qr);
       ctx.fillStyle = 'blue';
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, Math.PI*2);
+      ctx.arc(xy.x, xy.y, 5, 0, Math.PI*2);
       ctx.closePath();
       ctx.fill();
     }
@@ -298,20 +308,18 @@
     function drawPath(path, color) {
       var xo, yo;
       for (var i = 0; i < path.length; i++) {
-        var xy = axialToPixels(path[i]),
-             x = xy.x + canvas.width/2,
-             y = xy.y + canvas.height/2;
+        var xy = axialToPixels(path[i]);
         if (i > 0) {
           ctx.lineWidth = 3;
           ctx.strokeStyle = color;
           ctx.beginPath()
           ctx.moveTo(xo, yo);
-          ctx.lineTo(x, y);
+          ctx.lineTo(xy.x, xy.y);
           ctx.closePath();
           ctx.stroke();
         }
-        xo = x;
-        yo = y;
+        xo = xy.x;
+        yo = xy.y;
       }
     }
 
@@ -360,6 +368,16 @@
       f({ q: qr.q-1, r: qr.r+1 }, 4);
     }
 
+    function chooseOpenCell() {
+      var q = parseInt(Math.random() * (area * 2 + 1)) - area,
+          r = parseInt(Math.random() * (area * 2 + 1)) - area,
+          qr = { q: q, r: r },
+          d = axialDistance(center, qr);
+      if ((d > area) || getCell(qr).filled)
+        return chooseOpenCell()
+      return qr;
+    }
+
     function main() {
       for (var q = -area; q <= area; q++) {
         for (var r = -area; r <= area; r++) {
@@ -371,6 +389,8 @@
           }
         }
       }
+      clicked(axialToPixels(chooseOpenCell()));
+      clicked(axialToPixels(chooseOpenCell()));
     }
 
     function clicked(xy) {
@@ -412,6 +432,9 @@
       var last = null, last2 = null;
       for (var i = 0; i < path.length; i++) {
         var c = getCell(path[i]);
+
+
+
         // if (c.parent == c) {
         //   fixed.push(c.qr);
         // } else {
@@ -426,7 +449,7 @@
         // }
 
 
-        if (last && last.clean && (c.clean || c.goal)) {
+        if (last && last.clean && c.clean) {
           fixed.pop();
           fixed.push(midpoint(last.qr, last.edge));
           fixed.push(midpoint(last.qr, (c.edge+3)%6));
@@ -437,7 +460,7 @@
         // fixed.push(c.qr);
 
 
-        drawCell(c.qr, false, c.clean ? 'blue' : 'red'); // XXX
+        // drawCell(c.qr, false, c.start ? 'green' : (c.clean ? 'blue' : 'red')); // XXX
         last2 = last;
         last = c;
       }
