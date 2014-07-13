@@ -11,7 +11,7 @@
   <script type="text/javascript">
     var size = 25;
     var area = 5;
-    var fudge = 1.0;
+    var fudge = 1.1;
 
     var canvas = document.getElementById('the-canvas');
     var ctx = canvas.getContext('2d');
@@ -93,47 +93,143 @@
       if (shaded) ctx.fill();
     }
 
-    function cellsOnLine(a, b) {
-      var n = axialDistance(a, b);
-      var line = [];
-      a = { q: a.q+0.001, r: a.r-0.001 };
-      for (var i = 0; i <= n; i++) {
-        var q = (a.q * (n-i) + b.q * i) / n,
-            r = (a.r * (n-i) + b.r * i) / n;
-        console.log(q, r, Math.round(q), Math.round(r)); // XXX
-        var xy = axialToPixels({ q: q, r: r }),
-            x = xy.x + canvas.width / 2,
-            y = xy.y + canvas.height / 2;
-        ctx.fillStyle = 'red';
-        ctx.beginPath();
-        ctx.arc(x, y, 5, 0, Math.PI*2);
-        ctx.closePath();
-        ctx.fill();
-        line.push({ q: Math.round(q), r: Math.round(r) });
-      }
-      return line;
+
+    function drawEdge(qr, e, color) {
+      var xy = axialToPixels(qr),
+           x = xy.x + canvas.width/2,
+           y = xy.y + canvas.height/2,
+           a1 = wedge * (e - 0.5),
+           a2 = wedge * (e + 0.5);
+      console.log('drawEdge:', qr.q, qr.r, e, a1, a2); // XXX
+      if (!color) color = 'blue';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 5;
+      ctx.beginPath()
+      ctx.moveTo(x + size * Math.cos(a1), y - size * Math.sin(a1));
+      ctx.lineTo(x + size * Math.cos(a2), y - size * Math.sin(a2));
+      ctx.closePath();
+      ctx.stroke();
     }
+
+    function sign(x) {
+      if (x < 0)
+        return -1;
+      else
+        return 1;
+    }
+
+    var dirs = [
+      [[+0, -1, 2], null, [-1, +1, 4]],
+      [[-1, +0, 3], null, [+1, +0, 0]],
+      [[+1, -1, 1], null, [+0, +1, 5]]
+    ];
+
+    var dangers = [
+      [5, null, 1], [0, null, 2], [3, null, 1], [4, null, 2], [3, null, 5], [0, null, 4]
+    ];
+
+    var edge_offsets = [
+      [+1, +0], [+1, -1], [+0, -1], [-1, +0], [-1, +1], [+0, +1]
+    ];
 
     function lineOfSight(a, b) {
-      var n = axialDistance(a, b);
-      a = { q: a.q+0.001, r: a.r-0.001 };
-      console.log('N:', n); // XXXX
-      for (var i = 1; i < n; i++) {
-        var  q = (a.q * (n-i) + b.q * i) / n,
-             r = (a.r * (n-i) + b.r * i) / n,
-            qr = { q: Math.round(q), r: Math.round(r) },
-             c = getCell(qr);
-        console.log(c); // XXX
-        if (!c || c.filled) return false;
+      var dy = b.r - a.r,
+         dx2 = 2 * (b.q - a.q) + dy,
+          ty = Math.abs(dy),
+          tx = Math.abs(dx2),
+         tx3 = tx + tx + tx,
+         ty3 = ty + ty + ty,
+           n = a,
+          xs = sign(dx2),
+          ys = sign(dy),
+           e = -tx-tx,
+           d = null,
+           le = e;
+      while (true) {
+        if (n.q == b.q && n.r == b.r) return true;
+        var c = getCell(n);
+        if (c.filled) return false;
+        if (e >= 0) {
+          d = dirs[-xs+1][ys+1];    // UP LEFT
+          e = e - tx3 - ty3;
+        } else {
+          e = e + ty3;
+          if (e > -tx) {
+            d = dirs[xs+1][ys+1];   // UP RIGHT
+            e = e - tx3;
+          } else if (e < -tx3) {
+            d = dirs[xs+1][-ys+1];  // DOWN RIGHT
+            e = e + tx3;
+          } else {
+            d = dirs[1][xs+1];      // RIGHT
+            e = e + ty3;
+          }
+        }
+        // if the nearest neighbor to the edge crossed
+        // by this transition is filled, then fail
+        var sum = le + e + tx + tx + tx + tx;
+        var danger_edge = dangers[d[2]][sign(sum)+1];
+        var danger = { q: n.q + edge_offsets[danger_edge][0], r: n.r + edge_offsets[danger_edge][1] };
+        console.log('n.q:', n.q, 'n.r:', n.r, 'e:', d[2], 'sum:', sum, 'de:', danger_edge, 'd.q:', danger.q, 'd.r:', danger.r) // XXX
+        danger = getCell(danger);
+        if (sum != 0 && tx != 0 && danger && danger.filled) return false;
+        le = e;
+        c.clean = (sum == 0);
+        c.maybe_edge = d[2];
+        n = { q: n.q + d[0], r: n.r + d[1] };
       }
-      return true;
     }
 
-    function drawPath(a, b) {
-      var line = cellsOnLine(a, b);
-      for (var i = 0; i < line.length; i++) {
-        drawCell(line[i], false, 'red');
+    function drawLine(a, b) {
+      var dy = b.r - a.r,
+         dx2 = 2 * (b.q - a.q) + dy,
+          ty = Math.abs(dy),
+          tx = Math.abs(dx2),
+         tx3 = tx + tx + tx,
+         ty3 = ty + ty + ty,
+           n = a,
+          xs = sign(dx2),
+          ys = sign(dy),
+           e = -tx-tx,
+           i = 0,
+           d = null,
+          le = e;
+      while (true) {
+        drawCell(n, false, 'blue');
+        if (n.q == b.q && n.r == b.r) break;
+        if (e >= 0) {
+          d = dirs[-xs+1][ys+1];
+          e = e - tx3 - ty3;
+        } else {
+          e = e + ty3;
+          if (e > -tx) {
+            d = dirs[xs+1][ys+1];
+            e = e - tx3;
+          } else if (e < -tx3) {
+            d = dirs[xs+1][-ys+1];
+            e = e + tx3;
+          } else {
+            d = dirs[1][xs+1];
+            e = e + ty3;
+          }
+        }
+        console.log(le+tx+tx, e+tx+tx);
+        le = e;
+        n = { q: n.q + d[0], r: n.r + d[1] };
       }
+      var xy1 = axialToPixels(a),
+          xy2 = axialToPixels(b),
+           x1 = xy1.x + canvas.width/2,
+           y1 = xy1.y + canvas.height/2,
+           x2 = xy2.x + canvas.width/2,
+           y2 = xy2.y + canvas.height/2;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'red';
+      ctx.beginPath()
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.closePath();
+      ctx.stroke();
     }
 
     function cost(a, b) {
@@ -144,45 +240,32 @@
       return Math.sqrt(x * x + y * y);
     }
 
-    // SetVertex(s):
-    //   return if los(parent[s],s)
-    //   min = Inf
-    //   chosen = null
-    //   for s' in visible neighbors of s
-    //     continue unless s' in closed
-    //     cost = g[s'] + c(s',s)
-    //     if cost < min
-    //       min = cost
-    //       chosen = s'
-    //   parent[s] = chosen
-    //   g[s] = min
-
     function setVertex(c) {
-      var los = lineOfSight(c.parent.qr, c.qr)
-      console.log(los); // XXX
-      if (los) return;
-      var min = Infinity, t = null;
-      eachNeighbor(c.qr, function(qr) {
+      var los = lineOfSight(c.qr, c.parent.qr)
+      if (los) {
+        c.los = true;
+        c.edge = c.maybe_edge;
+        return;
+      } else {
+        c.los = false;
+        c.clean = true;
+      }
+      var min = Infinity, t = null, ii = null;
+      eachNeighbor(c.qr, function(qr, i) {
         var n = getCell(qr);
         if (n && n.closed) {
           var cc = n.g + cost(n.qr, c.qr);
           if (cc < min) {
             min = cc;
             t = n;
+            ii = i;
           }
         }
       });
+      c.edge = ii;
       c.parent = t;
       c.g = min;
     }
-
-    // Update(s,s'):
-    //   new_cost = g[parent[s]] + c(parent[s],s')
-    //   if new_cost < g[s']
-    //     parent[s'] = parent[s]
-    //     g[s'] = new_cost
-    //     remove s' from open if s' in open
-    //     open <- (s', new_cost + h(s'))
 
     function update(c, n, open) {
       var cc = c.parent.g + cost(c.parent.qr, n.qr);
@@ -201,24 +284,6 @@
       return cost(c.qr, end) * fudge;
     }
 
-    // Main():
-    //   open = {}
-    //   closed = {}
-    //   g[start] = 0
-    //   parent[start] = nil
-    //   open <- (start, h(start))
-    //   while open is not empty
-    //     s <- open
-    //     SetVertex(s)
-    //     if s == goal
-    //       return path from goal to start
-    //     closed <- s
-    //     for s' in visible neighbors of s
-    //       continue if s is in closed
-    //       g[s'] = Inf if s is not in open
-    //       Update(s,s')
-    //   return 'no path'
-
     function drawCircle(qr) {
       var xy = axialToPixels(qr),
            x = xy.x + canvas.width/2,
@@ -230,32 +295,33 @@
       ctx.fill();
     }
 
-    function drawPath(path) {
-      ctx.strokeWidth = 3;
-      ctx.strokeStyle = 'red';
-      // ctx.beginPath();
+    function drawPath(path, color) {
+      var xo, yo;
       for (var i = 0; i < path.length; i++) {
         var xy = axialToPixels(path[i]),
              x = xy.x + canvas.width/2,
              y = xy.y + canvas.height/2;
-        if (i == 0)
-          ctx.moveTo(x, y);
-        else {
+        if (i > 0) {
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = color;
+          ctx.beginPath()
+          ctx.moveTo(xo, yo);
           ctx.lineTo(x, y);
+          ctx.closePath();
           ctx.stroke();
         }
+        xo = x;
+        yo = y;
       }
-      // ctx.closePath();
-      // ctx.stroke();
     }
 
     function findPath() {
-      // drawPath(start, end);
       getCell(end).goal = true;
       var c = getCell(start);
       c.g = 0;
       c.h = heuristic(c);
       c.parent = c;
+      c.start = true;
       c.open = true;
       var open = [c];
       while (open.length) {
@@ -264,8 +330,7 @@
         });
         c = open.shift();
         setVertex(c);
-        drawCircle(c.qr); // XXX
-        console.log('expand', c.qr); // XXX
+        // drawCircle(c.qr);
         if (c.goal) {
           var path = [c.qr];
           while (c.parent != c) {
@@ -278,7 +343,6 @@
         eachNeighbor(c.qr, function(qr) {
           var n = getCell(qr);
           if (n && !n.filled && !n.closed) {
-            console.log('visit', n.qr); // XXX
             if (n.g == null) n.g = Infinity;
             update(c, n, open);
           }
@@ -288,12 +352,12 @@
     }
 
     function eachNeighbor(qr, f) {
-      f({ q: qr.q+1, r: qr.r+0 });
-      f({ q: qr.q-1, r: qr.r+0 });
-      f({ q: qr.q+0, r: qr.r+1 });
-      f({ q: qr.q+0, r: qr.r-1 });
-      f({ q: qr.q+1, r: qr.r-1 });
-      f({ q: qr.q-1, r: qr.r+1 });
+      f({ q: qr.q+1, r: qr.r+0 }, 0);
+      f({ q: qr.q-1, r: qr.r+0 }, 3);
+      f({ q: qr.q+0, r: qr.r+1 }, 5);
+      f({ q: qr.q+0, r: qr.r-1 }, 2);
+      f({ q: qr.q+1, r: qr.r-1 }, 1);
+      f({ q: qr.q-1, r: qr.r+1 }, 4);
     }
 
     function main() {
@@ -301,7 +365,7 @@
         for (var r = -area; r <= area; r++) {
           if (q+r >= -area && q+r <= area) {
             var qr = { q: q, r: r };
-            var filled = Math.random() < 0.5;
+            var filled = Math.random() < 0.3;
             addCell(qr, filled);
             drawCell(qr, filled);
           }
@@ -318,11 +382,66 @@
       drawCell(qr, false, 'red');
       if (start) {
         end = qr;
+        // drawLine(start, end);
         var path = findPath();
-        if (path) drawPath(path);
+        if (path) {
+          // drawPath(path, 'red')
+          path = fixPath(path);
+          drawPath(path, 'blue');
+        }
       } else {
         start = qr;
       }
+    }
+
+    var midpoints = [
+      [0.5, 0],
+      [0.5, -0.5],
+      [0, -0.5],
+      [-0.5, 0],
+      [-0.5, 0.5],
+      [0, 0.5]
+    ];
+
+    function midpoint(qr, e) {
+      return { q: qr.q + midpoints[e][0], r: qr.r + midpoints[e][1] };
+    }
+
+    function fixPath(path) {
+      var fixed = [];
+      var last = null, last2 = null;
+      for (var i = 0; i < path.length; i++) {
+        var c = getCell(path[i]);
+        // if (c.parent == c) {
+        //   fixed.push(c.qr);
+        // } else {
+        //   if (last.parent != last) {
+        //     fixed.push(midpoint(last.qr, (c.edge+3)%6));
+        //   }
+        //   if (c.goal) {
+        //     fixed.push(c.qr)
+        //   } else {
+        //     fixed.push(midpoint(c.qr, c.edge));
+        //   }
+        // }
+
+
+        if (last && last.clean && (c.clean || c.goal)) {
+          fixed.pop();
+          fixed.push(midpoint(last.qr, last.edge));
+          fixed.push(midpoint(last.qr, (c.edge+3)%6));
+        }
+        fixed.push(c.qr);
+
+
+        // fixed.push(c.qr);
+
+
+        drawCell(c.qr, false, c.clean ? 'blue' : 'red'); // XXX
+        last2 = last;
+        last = c;
+      }
+      return fixed;
     }
 
     function relMouseCoords(event) {
@@ -332,9 +451,9 @@
       var canvasY = 0;
       var currentElement = this;
 
-      do{
-          totalOffsetX += currentElement.offsetLeft - currentElement.scrollLeft;
-          totalOffsetY += currentElement.offsetTop - currentElement.scrollTop;
+      do {
+        totalOffsetX += currentElement.offsetLeft - currentElement.scrollLeft;
+        totalOffsetY += currentElement.offsetTop - currentElement.scrollTop;
       }
       while(currentElement = currentElement.offsetParent)
 
