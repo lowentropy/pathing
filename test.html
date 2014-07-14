@@ -7,44 +7,62 @@
 </style>
 </head>
 <body>
+  <p>Click two cells to find a path. Press any key to reset!</p>
   <canvas id='the-canvas' width="500" height="500"></canvas>
   <script type="text/javascript">
-    var size = 25;
-    var area = 5;
-    var fudge = 1.1;
+    // Resources
+    // ---------
+    //
+    //   http://www.redblobgames.com/grids/hexagons/
+    //   http://aigamedev.com/open/tutorial/theta-star-any-angle-paths/
+    //   http://zvold.blogspot.com/2010/02/line-of-sight-on-hexagonal-grid.html
 
+    // Configuration
+
+    var size = 25;   // radius of cell circumcircle
+    var area = 5;    // radius of hex grid patch
+    var fudge = 1.0; // fudge factor for heuristic
+
+    // Grab the canvas
     var canvas = document.getElementById('the-canvas');
     var ctx = canvas.getContext('2d');
 
-    var wedge = Math.PI / 3;
-    var cos = 0.5;
-    var sin = Math.sqrt(3) / 2;
-
-    var height = size * 2;
-    var width = height * sin;
+    // Precompute some math stuff
+    var wedge = Math.PI / 3;    // 60 degrees
+    var cos = 0.5;              // cos(wedge)
+    var sin = Math.sqrt(3) / 2; // sin(wedge)
+    var height = size * 2;      // cell height
+    var width = height * sin;   // cell width
 
     var center = { q: 0, r: 0 };
     var start, end;
-
     var cells = {};
 
+    // Cell manipulation and math
+    // --------------------------
+
+    // Add a cell to the index
     function addCell(qr, filled) {
       cells[qr.q] = cells[qr.q] || {};
       cells[qr.q][qr.r] = { qr: qr, filled: filled };
     }
 
+    // Find a cell by its coordinates from the index; returns null
+    // if that cell does not exist.
     function getCell(qr) {
       var row = cells[qr.q];
       if (row) return row[qr.r];
       return null;
     }
 
+    // Convert axial coordinates to XY coordinates in the canvas.
     function axialToPixels(qr) {
       return {
         x: width * (qr.q + qr.r / 2) + canvas.width/2,
         y: width * qr.r * sin + canvas.height/2 };
     }
 
+    // Convert canvas pixel coordinates to axial coordinates.
     function pixelsToAxial(xy) {
       var x = xy.x - canvas.width/2,
           y = xy.y - canvas.height/2;
@@ -53,60 +71,13 @@
       return { q: Math.round(q), r: Math.round(r) };
     }
 
-    function axialToCube(qr) {
-      return { x: qr.q, y: qr.r, z: -qr.q-qr.r };
-    }
-
+    // Find the axial distance between two coordinates.
     function axialDistance(a, b) {
       var q = a.q - b.q, r = a.r - b.r;
       return (Math.abs(q) + Math.abs(r) + Math.abs(q + r)) / 2;
     }
 
-    function drawCell(qr, shaded, color) {
-      if (!color) color = '#cccccc';
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-      ctx.lineWidth = 1;
-
-      var c = axialToPixels(qr);
-
-      ctx.beginPath();
-
-      for (var i = 0; i <= 6; i++) {
-        var angle = wedge * (i + 0.5);
-        var xy = {
-          x: c.x + size * Math.cos(angle),
-          y: c.y + size * Math.sin(angle) };
-        if (i == 0) {
-          ctx.moveTo(xy.x, xy.y);
-        } else {
-          ctx.lineTo(xy.x, xy.y);
-          ctx.stroke();
-        }
-      }
-
-      ctx.closePath();
-
-      if (shaded) ctx.fill();
-    }
-
-
-    function drawEdge(qr, e, color) {
-      var xy = axialToPixels(qr),
-           x = xy.x + canvas.width/2,
-           y = xy.y + canvas.height/2,
-           a1 = wedge * (e - 0.5),
-           a2 = wedge * (e + 0.5);
-      if (!color) color = 'blue';
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 5;
-      ctx.beginPath()
-      ctx.moveTo(x + size * Math.cos(a1), y - size * Math.sin(a1));
-      ctx.lineTo(x + size * Math.cos(a2), y - size * Math.sin(a2));
-      ctx.closePath();
-      ctx.stroke();
-    }
-
+    // Return -1 for negative numbers, 1 for zero or positive.
     function sign(x) {
       if (x < 0)
         return -1;
@@ -114,17 +85,68 @@
         return 1;
     }
 
+    // eachNeighbor calls the provided function six times,
+    // passing in then coordinates of each neighbor of the
+    // given cell coordinate.
+    function eachNeighbor(qr, f) {
+      f({ q: qr.q+1, r: qr.r+0 }, 0);
+      f({ q: qr.q-1, r: qr.r+0 }, 3);
+      f({ q: qr.q+0, r: qr.r+1 }, 5);
+      f({ q: qr.q+0, r: qr.r-1 }, 2);
+      f({ q: qr.q+1, r: qr.r-1 }, 1);
+      f({ q: qr.q-1, r: qr.r+1 }, 4);
+    }
+
+    // Edge-midpoint offsets by edge index
+    var midpoints = [
+      [0.5, 0],
+      [0.5, -0.5],
+      [0, -0.5],
+      [-0.5, 0],
+      [-0.5, 0.5],
+      [0, 0.5]
+    ];
+
+    // Return the coordinates of an edge midpoint in axial
+    // coordinates.
+    function midpoint(qr, e) {
+      var off = midpoints[e];
+      return { q: qr.q + off[0], r: qr.r + off[1] };
+    }
+
+    // dirs is a table of 'directions' based on x and y signs.
+    // The first index is x sign, the second is y. Note that
+    // the sign of x can be zero, which represents moving left
+    // or right. In that case, the second index is actually x.
+    // The values in the table are [q, r, e], where qr are an
+    // offset to get to the next cell, and 'e' is the traversed
+    // edge index. Edges are counted starting with the right
+    // edge being zero and going counterclockwise.
     var dirs = [
       [[+0, -1, 2], null, [-1, +1, 4]],
       [[-1, +0, 3], null, [+1, +0, 0]],
       [[+1, -1, 1], null, [+0, +1, 5]]
     ];
 
-    var edge_offsets = [
+    // edges stores the qr offset, indexed by traversed edge.
+    var edges = [
       [+1, +0], [+1, -1], [+0, -1], [-1, +0], [-1, +1], [+0, +1]
     ];
 
+    // Algorithm
+    // ---------
+
+    // lineOfSight determines if there is a traversable straight-line
+    // path between the two given coordinates. It is a modified version
+    // of Bresenhams's algorithm that works for hexagonal grids. It
+    // also ensures that the line doesn't pass too _near_ any blocked
+    // cell; it does that by considering each traversed edge. If the
+    // line passes through the left or right side of the edge (and
+    // not the midpoint), then the nearest neighbor on that side is
+    // checked for blockage.
     function lineOfSight(a, b) {
+      // find distance between coordinates, converted
+      // to horizontal and vertical, and using integer basis
       var dy = b.r - a.r,
          dx2 = 2 * (b.q - a.q) + dy,
           ty = Math.abs(dy),
@@ -159,89 +181,24 @@
         }
         // if the nearest neighbor to the edge crossed
         // by this transition is filled, then fail
-        var sum = le + e + tx + tx + tx + tx;
-        var danger_edge = (d[2] + 6 - sign(sum) * xs * ys) % 6;
-        var danger = { q: n.q + edge_offsets[danger_edge][0], r: n.r + edge_offsets[danger_edge][1] };
-        console.log('n.q:', n.q, 'n.r:', n.r, 'e:', d[2], 'sum:', sum, 'de:', danger_edge, 'd.q:', danger.q, 'd.r:', danger.r) // XXX
+        var sum = le + e + tx + tx + tx + tx,
+            edge = (d[2] + 6 - sign(sum) * xs * ys) % 6,
+            offset = edges[edge],
+            danger = { q: n.q + offset[0], r: n.r + offset[1] };
         danger = getCell(danger);
-        if (sum != 0 && tx != 0 && danger && danger.filled) return false;
+        if (sum != 0 && tx != 0 && danger && danger.filled)
+          return false;
+        // move to the next cell, but remember the last error value
         le = e;
         c.maybe_clean = (sum == 0);
-        console.log('CLEAN (los):', n.q, n.r, c.clean); // XXX
         c.maybe_edge = d[2];
         n = { q: n.q + d[0], r: n.r + d[1] };
       }
     }
 
-    function drawLine(a, b) {
-      var dy = b.r - a.r,
-         dx2 = 2 * (b.q - a.q) + dy,
-          ty = Math.abs(dy),
-          tx = Math.abs(dx2),
-         tx3 = tx + tx + tx,
-         ty3 = ty + ty + ty,
-           n = a,
-          xs = sign(dx2),
-          ys = sign(dy),
-           e = -tx-tx,
-           i = 0,
-           d = null,
-          le = e;
-      while (true) {
-        drawCell(n, false, 'blue');
-        if (n.q == b.q && n.r == b.r) break;
-        if (e >= 0) {
-          d = dirs[-xs+1][ys+1];
-          e = e - tx3 - ty3;
-        } else {
-          e = e + ty3;
-          if (e > -tx) {
-            d = dirs[xs+1][ys+1];
-            e = e - tx3;
-          } else if (e < -tx3) {
-            d = dirs[xs+1][-ys+1];
-            e = e + tx3;
-          } else {
-            d = dirs[1][xs+1];
-            e = e + ty3;
-          }
-        }
-
-        // get the danger cell
-        var sum = le + e + tx + tx + tx + tx;
-        var danger_edge = (d[2] + 6 - sign(sum) * xs * ys) % 6;
-        var danger = { q: n.q + edge_offsets[danger_edge][0], r: n.r + edge_offsets[danger_edge][1] };
-
-        // console.log(le+tx+tx, e+tx+tx);
-
-        // draw a line from the edge midpoint to the danger cell
-        if (sum != 0) {
-          var m = midpoint(n, d[2]),
-              xy1 = axialToPixels(m),
-              xy2 = axialToPixels(danger);
-          ctx.strokeStyle = 'green';
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          ctx.moveTo(xy1.x, xy1.y);
-          ctx.lineTo(xy2.x, xy2.y);
-          ctx.closePath();
-          ctx.stroke();
-        }
-
-        le = e;
-        n = { q: n.q + d[0], r: n.r + d[1] };
-      }
-      var xy1 = axialToPixels(a),
-          xy2 = axialToPixels(b);
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'red';
-      ctx.beginPath()
-      ctx.moveTo(xy1.x, xy1.y);
-      ctx.lineTo(xy2.x, xy2.y);
-      ctx.closePath();
-      ctx.stroke();
-    }
-
+    // compute the cost of the straight-line path between
+    // the two coordinates, which is just the euclidean
+    // distance between their canvas coordinates.
     function cost(a, b) {
       var a = axialToPixels(a),
           b = axialToPixels(b),
@@ -250,6 +207,10 @@
       return Math.sqrt(x * x + y * y);
     }
 
+    // setVertex checks the expanded point. It checks to
+    // make sure it really has line of sight to its parent;
+    // if not, it chooses the lowest-cost neighbor as its
+    // parent instead.
     function setVertex(c) {
       var los = lineOfSight(c.qr, c.parent.qr)
       if (los) {
@@ -259,7 +220,6 @@
         return;
       } else {
         c.los = false;
-        console.log('CLEAN (set):', c.qr.q, c.qr.r, true); // XXX
         c.clean = true;
       }
       var min = Infinity, t = null, ii = null;
@@ -279,6 +239,11 @@
       c.g = min;
     }
 
+    // Update a neighbor of the current node; if we can make
+    // a shorter path to that neighbor, reset its parent equal
+    // to our parent. Note that it might not actually have
+    // line of sight to our parent, but that's okay, because
+    // setVertex will fix it later.
     function update(c, n, open) {
       var cc = c.parent.g + cost(c.parent.qr, n.qr);
       if (cc < n.g) {
@@ -292,37 +257,15 @@
       }
     }
 
+    // The heuristic function (called 'h' in A*)
     function heuristic(c) {
       return cost(c.qr, end) * fudge;
     }
 
-    function drawCircle(qr) {
-      var xy = axialToPixels(qr);
-      ctx.fillStyle = 'blue';
-      ctx.beginPath();
-      ctx.arc(xy.x, xy.y, 5, 0, Math.PI*2);
-      ctx.closePath();
-      ctx.fill();
-    }
-
-    function drawPath(path, color) {
-      var xo, yo;
-      for (var i = 0; i < path.length; i++) {
-        var xy = axialToPixels(path[i]);
-        if (i > 0) {
-          ctx.lineWidth = 3;
-          ctx.strokeStyle = color;
-          ctx.beginPath()
-          ctx.moveTo(xo, yo);
-          ctx.lineTo(xy.x, xy.y);
-          ctx.closePath();
-          ctx.stroke();
-        }
-        xo = xy.x;
-        yo = xy.y;
-      }
-    }
-
+    // findPath uses the Lazy Theta* algorithm to find a path
+    // through a hexagonal grid. It returns the path, which is
+    // a list of axial coordinates from the start to end cell.
+    // If no path could be found, returns null.
     function findPath() {
       getCell(end).goal = true;
       var c = getCell(start);
@@ -333,12 +276,12 @@
       c.open = true;
       var open = [c];
       while (open.length) {
+        // Yeah I know, use a priority queue :P
         open.sort(function(a, b) {
           return a.g + a.h - b.g - b.h;
         });
         c = open.shift();
         setVertex(c);
-        // drawCircle(c.qr);
         if (c.goal) {
           var path = [c.qr];
           while (c.parent != c) {
@@ -359,15 +302,103 @@
       return null;
     }
 
-    function eachNeighbor(qr, f) {
-      f({ q: qr.q+1, r: qr.r+0 }, 0);
-      f({ q: qr.q-1, r: qr.r+0 }, 3);
-      f({ q: qr.q+0, r: qr.r+1 }, 5);
-      f({ q: qr.q+0, r: qr.r-1 }, 2);
-      f({ q: qr.q+1, r: qr.r-1 }, 1);
-      f({ q: qr.q-1, r: qr.r+1 }, 4);
+    // fixPath takes a list of axial coordinates and changes
+    // them by taking short-cuts through cells. When a line
+    // passes through a cell "cleanly", i.e. passes through the
+    // midpoint of both edges on its path, then we don't need
+    // to bother pathing all the way to the center of the cell.
+    // Just path from midpoint to midpoint. Returns a new list
+    // of coordinates.
+    function fixPath(path) {
+      var fixed = [], last = null;
+      for (var i = 0; i < path.length; i++) {
+        var c = getCell(path[i]);
+        if (last && last.clean && c.clean) {
+          fixed.pop();
+          fixed.push(midpoint(last.qr, last.edge));
+          fixed.push(midpoint(last.qr, (c.edge+3)%6));
+        }
+        fixed.push(c.qr);
+        last = c;
+      }
+      return fixed;
     }
 
+    // Drawing functions
+    // -----------------
+
+    // drawCell draws a hex cell. You can specify the cell color and
+    // also whether the cell is filled in.
+    function drawCell(qr, shaded, color) {
+      if (!color) color = '#cccccc';
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 1;
+
+      var c = axialToPixels(qr);
+
+      ctx.beginPath();
+
+      for (var i = 0; i <= 6; i++) {
+        var angle = wedge * (i + 0.5);
+        var xy = {
+          x: c.x + size * Math.cos(angle),
+          y: c.y + size * Math.sin(angle) };
+        if (i == 0) {
+          ctx.moveTo(xy.x, xy.y);
+        } else {
+          ctx.lineTo(xy.x, xy.y);
+          ctx.stroke();
+        }
+      }
+
+      ctx.closePath();
+
+      if (shaded) ctx.fill();
+    }
+
+    // drawEdge draws just one edge of a cell
+    function drawEdge(qr, e, color) {
+      var xy = axialToPixels(qr),
+           x = xy.x + canvas.width/2,
+           y = xy.y + canvas.height/2,
+           a1 = wedge * (e - 0.5),
+           a2 = wedge * (e + 0.5);
+      if (!color) color = 'blue';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 5;
+      ctx.beginPath()
+      ctx.moveTo(x + size * Math.cos(a1), y - size * Math.sin(a1));
+      ctx.lineTo(x + size * Math.cos(a2), y - size * Math.sin(a2));
+      ctx.closePath();
+      ctx.stroke();
+    }
+
+    // drawPath draws a series of line segments connecting the
+    // axial coordinates in the given path.
+    function drawPath(path, color) {
+      var last;
+      for (var i = 0; i < path.length; i++) {
+        var xy = axialToPixels(path[i]);
+        if (i > 0) {
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = color;
+          ctx.beginPath()
+          ctx.moveTo(last.x, last.y);
+          ctx.lineTo(xy.x, xy.y);
+          ctx.closePath();
+          ctx.stroke();
+        }
+        last = xy;
+      }
+    }
+
+    // Main functions
+    // --------------
+
+    // chooseOpenCell finds a random cell in the drawn grid,
+    // and ensures that it is not filled. Returns the axial
+    // coordinates of teh chosen cell.
     function chooseOpenCell() {
       var q = parseInt(Math.random() * (area * 2 + 1)) - area,
           r = parseInt(Math.random() * (area * 2 + 1)) - area,
@@ -378,21 +409,40 @@
       return qr;
     }
 
+    // Draw the hex grid
     function main() {
       for (var q = -area; q <= area; q++) {
         for (var r = -area; r <= area; r++) {
           if (q+r >= -area && q+r <= area) {
             var qr = { q: q, r: r };
-            var filled = Math.random() < 0.3;
+            var filled = Math.random() < 0.5;
             addCell(qr, filled);
             drawCell(qr, filled);
           }
         }
       }
-      clicked(axialToPixels(chooseOpenCell()));
-      clicked(axialToPixels(chooseOpenCell()));
+      // clickCellsAutomatically();
     }
 
+    // Pick two open cells that are sufficiently far
+    // apart and use them as the start/end points.
+    function clickCellsAutomatically() {
+      var c1, c2;
+      while (true) {
+        c1 = chooseOpenCell();
+        c2 = chooseOpenCell();
+        if (axialDistance(c1, c2) > area) {
+          break;
+        }
+      }
+      clicked(axialToPixels(c1));
+      clicked(axialToPixels(c2));
+    }
+
+    // Manage state when the user clicks on the grid.
+    // If the clicked cell is open, then it will be the
+    // start or end of the path. Once both points are
+    // chosen, find a path between them and draw it.
     function clicked(xy) {
       var qr = pixelsToAxial(xy);
       var d = axialDistance(center, qr);
@@ -402,10 +452,8 @@
       drawCell(qr, false, 'red');
       if (start) {
         end = qr;
-        // drawLine(start, end);
         var path = findPath();
         if (path) {
-          // drawPath(path, 'red')
           path = fixPath(path);
           drawPath(path, 'blue');
         }
@@ -414,59 +462,7 @@
       }
     }
 
-    var midpoints = [
-      [0.5, 0],
-      [0.5, -0.5],
-      [0, -0.5],
-      [-0.5, 0],
-      [-0.5, 0.5],
-      [0, 0.5]
-    ];
-
-    function midpoint(qr, e) {
-      return { q: qr.q + midpoints[e][0], r: qr.r + midpoints[e][1] };
-    }
-
-    function fixPath(path) {
-      var fixed = [];
-      var last = null, last2 = null;
-      for (var i = 0; i < path.length; i++) {
-        var c = getCell(path[i]);
-
-
-
-        // if (c.parent == c) {
-        //   fixed.push(c.qr);
-        // } else {
-        //   if (last.parent != last) {
-        //     fixed.push(midpoint(last.qr, (c.edge+3)%6));
-        //   }
-        //   if (c.goal) {
-        //     fixed.push(c.qr)
-        //   } else {
-        //     fixed.push(midpoint(c.qr, c.edge));
-        //   }
-        // }
-
-
-        if (last && last.clean && c.clean) {
-          fixed.pop();
-          fixed.push(midpoint(last.qr, last.edge));
-          fixed.push(midpoint(last.qr, (c.edge+3)%6));
-        }
-        fixed.push(c.qr);
-
-
-        // fixed.push(c.qr);
-
-
-        // drawCell(c.qr, false, c.start ? 'green' : (c.clean ? 'blue' : 'red')); // XXX
-        last2 = last;
-        last = c;
-      }
-      return fixed;
-    }
-
+    // Find the clicked coordinates within the canvas.
     function relMouseCoords(event) {
       var totalOffsetX = 0;
       var totalOffsetY = 0;
@@ -494,6 +490,13 @@
 
     main();
 
+    document.addEventListener("keyup", function() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      start = null;
+      end = null;
+      cells = {};
+      main();
+    });
   </script>
 </body>
 </html>
